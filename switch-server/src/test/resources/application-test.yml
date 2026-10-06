@@ -1,0 +1,37 @@
+server:
+  port: 0
+
+switch:
+  server:
+    port: 0
+  issuer-timeout: 80ms
+  velocity:
+    window: 60s
+    max-count: 5
+    max-amount: 1000000
+  circuit-breaker:
+    sliding-window-size: 10
+    minimum-number-of-calls: 5
+    failure-rate-threshold: 50
+    wait-duration-in-open-state: 1s
+    permitted-calls-in-half-open-state: 2
+  store-and-forward:
+    interval: 50ms
+    delivery-timeout: 500ms
+    max-attempts: 1000
+  issuers:
+    - id: northwind
+      name: Northwind Bank
+      bins: ["400010"]
+      stand-in: { max-amount: 25000, max-cumulative-amount: 50000, cumulative-window: 24h }
+      simulator: { accounts: 1000, min-balance: 100000, max-balance: 100000, median-latency: 0ms, p99-latency: 0ms, hold-capacity: 10000 }
+    - id: harbor
+      name: Harbor Credit Union
+      bins: ["400020"]
+      stand-in: { max-amount: 25000, max-cumulative-amount: 50000, cumulative-window: 24h }
+      simulator: { accounts: 1000, min-balance: 100000, max-balance: 100000, median-latency: 0ms, p99-latency: 0ms, hold-capacity: 10000 }
+    - id: cedar
+      name: Cedar Savings Bank
+      bins: ["400030"]
+      stand-in: { max-amount: 25000, max-cumulative-amount: 50000, cumulative-window: 24h }
+      simulator: { accounts: 1000, min-balance: 100000, max-balance: 100000, median-latency: 0ms, p99-latency: 0ms, hold-capacity: 10000 }

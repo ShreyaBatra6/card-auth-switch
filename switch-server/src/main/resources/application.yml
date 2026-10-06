@@ -1,0 +1,87 @@
+spring:
+  application:
+    name: card-auth-switch
+  main:
+    banner-mode: off
+
+# HTTP: admin API + actuator (metrics, health). Bound to localhost because the admin API is unauthenticated.
+server:
+  address: 127.0.0.1
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics, prometheus
+
+switch:
+  server:
+    host: 127.0.0.1
+    port: 8583
+    io-threads: 0              # 0 = Netty default (2 x cores)
+    max-frame-length: 4096
+
+  # How long the switch waits for an issuer before standing in.
+  issuer-timeout: 100ms
+
+  duplicates:
+    window: 2m
+    max-entries: 1000000
+
+  # Per card, counted over all attempts that reach routing. Amounts in cents.
+  velocity:
+    window: 60s
+    max-count: 5
+    max-amount: 300000         # $3,000.00
+
+  circuit-breaker:
+    sliding-window-size: 100
+    minimum-number-of-calls: 20
+    failure-rate-threshold: 50
+    wait-duration-in-open-state: 5s
+    permitted-calls-in-half-open-state: 10
+
+  store-and-forward:
+    interval: 1s
+    batch-size: 1000
+    max-attempts: 20
+    delivery-timeout: 2s
+    max-depth: 1000000
+
+  # Mock issuers. Test cards are BIN + 9-digit index + Luhn digit, for index < accounts
+  # (e.g. 4000100000000006 is Northwind card #0).
+  issuers:
+    - id: northwind
+      name: Northwind Bank
+      bins: ["400010"]
+      stand-in: { max-amount: 25000, max-cumulative-amount: 50000, cumulative-window: 24h }
+      simulator:
+        accounts: 100000
+        min-balance: 5000          # $50
+        max-balance: 500000        # $5,000
+        median-latency: 2ms
+        p99-latency: 12ms
+        hold-capacity: 300000
+    - id: harbor
+      name: Harbor Credit Union
+      bins: ["400020"]
+      stand-in: { max-amount: 15000, max-cumulative-amount: 30000, cumulative-window: 24h }
+      simulator:
+        accounts: 100000
+        min-balance: 5000
+        max-balance: 300000
+        median-latency: 4ms
+        p99-latency: 20ms
+        hold-capacity: 300000
+    - id: cedar
+      name: Cedar Savings Bank
+      bins: ["400030"]
+      stand-in: { max-amount: 20000, max-cumulative-amount: 40000, cumulative-window: 24h }
+      simulator:
+        accounts: 100000
+        min-balance: 5000
+        max-balance: 400000
+        median-latency: 6ms
+        p99-latency: 30ms
+        hold-capacity: 300000

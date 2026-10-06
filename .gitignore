@@ -1,0 +1,16 @@
+target/
+*.class
+*.log
+hs_err_pid*
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
