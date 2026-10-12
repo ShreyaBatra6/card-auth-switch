@@ -2,6 +2,7 @@ package com.cardswitch.server.config;
 
 import com.cardswitch.iso8583.IsoCodec;
 import com.cardswitch.iso8583.IsoSpec;
+import com.cardswitch.server.issuer.PreciseDelayScheduler;
 import com.cardswitch.server.issuer.SimulatedIssuer;
 import com.cardswitch.server.routing.Issuer;
 import com.cardswitch.server.routing.IssuerRegistry;
@@ -35,21 +36,27 @@ public class SwitchConfiguration {
         return new IsoCodec(IsoSpec.iso87Ascii());
     }
 
-    /** Fires issuer timeouts and drives store-and-forward delivery. */
+    /**
+     * Fires issuer timeouts and drives store-and-forward delivery. On Windows, timed waits round up to the 15.6 ms
+     * timer tick, so a 100 ms issuer timeout fires after 100-116 ms there; Linux timers are far finer.
+     */
     @Bean(name = SWITCH_SCHEDULER, destroyMethod = "shutdownNow")
     public ScheduledExecutorService switchScheduler() {
         return scheduler("switch-timer-", 2);
     }
 
-    /** Delays simulated issuer responses. Separate from the switch's own timers, as a remote host would be. */
-    @Bean(name = SIMULATOR_SCHEDULER, destroyMethod = "shutdownNow")
-    public ScheduledExecutorService issuerSimulatorScheduler() {
-        return scheduler("issuer-sim-", 2);
+    /**
+     * Delays simulated issuer responses precisely (see {@link PreciseDelayScheduler} for why OS timers won't do).
+     * Separate from the switch's own timers, as a remote host would be.
+     */
+    @Bean(name = SIMULATOR_SCHEDULER, destroyMethod = "close")
+    public PreciseDelayScheduler issuerSimulatorScheduler() {
+        return new PreciseDelayScheduler("issuer-sim-timer");
     }
 
     @Bean
     public IssuerRegistry issuerRegistry(SwitchProperties properties,
-                                         @Qualifier(SIMULATOR_SCHEDULER) ScheduledExecutorService simulatorScheduler) {
+                                         @Qualifier(SIMULATOR_SCHEDULER) PreciseDelayScheduler simulatorScheduler) {
         CircuitBreakerConfig breakerConfig = circuitBreakerConfig(properties.circuitBreaker());
         List<Issuer> issuers = new ArrayList<>();
         for (SwitchProperties.IssuerProperties p : properties.issuers()) {

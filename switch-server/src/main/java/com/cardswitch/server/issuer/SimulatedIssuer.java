@@ -14,7 +14,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.SplittableRandom;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -96,12 +95,12 @@ public final class SimulatedIssuer implements IssuerClient {
     private final Map<String, Account> accounts;
     /** Approved authorizations by RRN, so reversals and advices can be matched to them. */
     private final Cache<String, Hold> holds;
-    private final ScheduledExecutorService scheduler;
+    private final PreciseDelayScheduler scheduler;
     private final AtomicLong approvals = new AtomicLong();
     private volatile Behavior behavior;
 
     public SimulatedIssuer(String issuerId, String bin, SwitchProperties.Simulator config,
-                           ScheduledExecutorService scheduler) {
+                           PreciseDelayScheduler scheduler) {
         this.issuerId = issuerId;
         this.bin = bin;
         this.accountCount = config.accounts();

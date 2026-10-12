@@ -20,28 +20,30 @@ tail. The gap between the two columns below is that effect.
 
 ## Final results
 
-Recorded with `scripts/benchmark.sh` (G1, `-XX:MaxGCPauseMillis=10`, 1 GB heap, 16 connections). The laptop was
-**on battery** (29%, discharging), which lowers CPU clocks and lets Windows ignore the 1 ms timer request below.
-Expect better numbers plugged in. Raw tables: [`results/capacity.md`](results/capacity.md),
-[`results/realistic.md`](results/realistic.md), [`results/resilience.md`](results/resilience.md), and the per-second
-[`results/resilience.csv`](results/resilience.csv).
+Recorded with `scripts/benchmark.sh` on AC power (G1, `-XX:MaxGCPauseMillis=10`, 1 GB heap, 16 connections).
+Raw tables: [`results/capacity.md`](results/capacity.md), [`results/realistic.md`](results/realistic.md),
+[`results/resilience.md`](results/resilience.md), and the per-second [`results/resilience.csv`](results/resilience.csv).
 
 **Switch alone (issuers answer instantly)**: latency vs. service time shows where coordinated omission would hide
 the tail.
 
 | TPS | Latency p50 / p99 / p99.9 | Service time p50 / p99 / p99.9 |
 |---:|---|---|
-| 2,000 | 0.29 / 1.23 / 12.2 ms | 0.28 / 0.50 / 5.95 ms |
-| 5,000 | 0.26 / 9.61 / 18.7 ms | 0.25 / 0.54 / 17.9 ms |
-| 10,000 | 0.26 / 57.6 / 121 ms | 0.24 / 4.67 / 20.7 ms |
-| 15,000 | 24.4 / 467 / 473 ms | 0.23 / 20.8 / 120 ms |
+| 2,000 | 0.21 / 0.32 / 5.10 ms | 0.20 / 0.31 / 0.72 ms |
+| 5,000 | 0.15 / 8.74 / 24.7 ms | 0.15 / 0.45 / 12.9 ms |
+| 10,000 | 0.12 / 31.0 / 53.6 ms | 0.12 / 0.56 / 13.5 ms |
+| 15,000 | 0.17 / 722 / 773 ms | 0.15 / 10.2 / 116 ms |
 
-At 10,000 TPS the switch still answers 99% of requests within 4.7 ms *of receiving them*, but the requests were
-sometimes sent late because the generator shared a saturated CPU. A closed-loop tool would have reported the
-4.7 ms. An earlier tuning run at 10,000 TPS (after a 5,000 TPS warm-up rather than the full 2k/5k ramp) measured
-p99 13.8 ms, so 10k is right at this machine's knee.
+At 10,000 TPS the switch answers 99% of requests within 0.56 ms *of receiving them*, but some requests left the
+generator late (GC pauses, and a CPU shared with the generator). A closed-loop tool would have reported 0.56 ms.
 
+**End to end (simulated issuer latency)**: 2,000 TPS p50 4.16 / p99 25.3 ms; 5,000 TPS p50 4.25 / p99 25.7 ms.
+A 1,000 TPS stage in the same run was discarded: the machine had run out of RAM (0.2 GB free, ~7,800 pages/s of
+paging from other applications) and froze for seconds at a time. Benchmarks need free memory as much as free CPU.
 
+**Issuer outage**: recorded before the precise latency simulator below existed, so its absolute latencies include
+Windows timer rounding of the simulated issuer delays. The failover behavior is what it measures: 0 errors out of
+180,000, failover within ~2 s, recovery within 3 s.
 
 ## Investigation log
 
@@ -53,16 +55,27 @@ A probe scheduling 2 ms tasks on a `ScheduledThreadPoolExecutor` showed the caus
 | | `schedule(2 ms)` actual delay p50 | p90 | max |
 |---|---:|---:|---:|
 | default | 15.58 ms | 16.09 ms | 16.91 ms |
-| with 1 ms timer resolution | 2.66 ms | 3.64 ms | 4.97 ms |
+| with 1 ms timer resolution requested | 2.66 ms | 3.64 ms | 4.97 ms |
 
-Windows rounds timed waits up to its 15.6 ms timer tick. HotSpot asks for 1 ms resolution while any
-`Thread.sleep` is in progress, so `WindowsTimerResolution` keeps a daemon thread asleep. End-to-end p50 at
-2,000 TPS dropped from **12.4 ms to 4.7 ms**, which matches the simulated issuers. This doesn't apply on Linux.
+Windows rounds timed waits up to its 15.6 ms timer tick. The usual JVM workaround is a daemon thread in
+`Thread.sleep(Long.MAX_VALUE)`, because HotSpot requests 1 ms resolution while such a sleep is in progress. It
+looked like it worked (p50 fell to 4.7 ms in one run), but later runs were back at ~12.5 ms. A probe that measured
+over time showed why:
 
-Caveat: in the final benchmark the laptop was on battery and the long-running switch process got the 15.6 ms
-granularity again (p50 ≈ 12 ms in the end-to-end table), while a short foreground probe still got 1 ms.
-Windows 11 power throttling can ignore timer-resolution requests from background processes. Only the
-*simulated* issuer delays are affected; the switch-alone numbers don't use timers on the request path.
+| Time since JVM start | 0 s | 3 s | 6 s | … | 21 s |
+|---|---:|---:|---:|---|---:|
+| `schedule(2 ms)` p50 with the workaround | 2.96 ms | 15.74 ms | 15.49 ms | … | 15.84 ms |
+
+**Windows 11 honored the 1 ms request for only about 3 seconds**, whether the process ran in the foreground or
+background, on battery or AC. (The one good run was probably helped by another application holding the
+system timer at high resolution at the time.)
+
+The fix was to stop depending on OS timers where precision matters. `PreciseDelayScheduler` runs the simulated
+issuer delays on a dedicated thread that parks until the next deadline is 20 ms away (more than one OS tick), then
+spins for the rest. A unit test asserts a median lateness under 1 ms for 2 ms delays. End-to-end p50 at 2,000 TPS
+is now 4.2 ms, which matches the configured issuer medians. The cost is up to one core while responses are pending;
+acceptable for a simulator of remote hosts. The switch's own 100 ms issuer timeout still uses an ordinary
+scheduler, so on Windows it fires after 100–116 ms; on Linux timers are far finer.
 
 ### 2. GC pauses were the whole tail
 
@@ -76,10 +89,10 @@ objects survive young collections and have to be copied.
 | G1, default 200 ms pause goal | 2k → 5k → 10k → … | 21.9 ms | 68.7 ms | 115.5 ms |
 | Generational ZGC (`-XX:+UseZGC -XX:+ZGenerational`) | 5k → 10k | 360.7 ms | 1,045.5 ms | 1,229.8 ms |
 | G1, `-XX:MaxGCPauseMillis=10` | 5k → 10k | 8.7 ms | 13.8 ms | 26.0 ms |
-| **G1, `-XX:MaxGCPauseMillis=10`** (final benchmark) | 2k → 5k → 10k → 15k | **9.6 ms** | 57.6 ms | 124.5 ms |
+| **G1, `-XX:MaxGCPauseMillis=10`** (same 2k → 5k → 10k → 15k ramp) | 2k → 5k → 10k → 15k | **9.6 ms** | 57.6 ms | 124.5 ms |
 
-The like-for-like comparison is the first row against the last: **p99 at 5,000 TPS went from 21.9 ms to
-9.6 ms**. At 10,000 TPS the result depends on how much state earlier stages left in the caches, and on noise
+These four runs were all on battery. The like-for-like comparison is the first row against the last:
+**p99 at 5,000 TPS went from 21.9 ms to 9.6 ms** (8.7 ms on AC power in the final results). At 10,000 TPS the result depends on how much state earlier stages left in the caches, and on noise
 at this machine's saturation point.
 
 - **ZGC made it much worse here.** Its pauses are tiny, but its concurrent marking and relocation threads

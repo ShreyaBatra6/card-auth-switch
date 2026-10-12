@@ -8,10 +8,10 @@ keep getting answers and the issuer still learns about every transaction later.
 Java 21 · Spring Boot 4 · Netty · Resilience4j · Caffeine · Micrometer/Prometheus · HdrHistogram · JUnit
 
 > **Results on a 4-core laptop, with the load generator on the same machine:**
-> **5,000 TPS end to end at p99 34 ms** (including simulated issuer latency) with zero errors; the switch's own
-> processing adds **p99 1.2 ms at 2,000 TPS** and **9.6 ms at 5,000 TPS**; and when an issuer goes down at
-> 2,000 TPS, stand-in processing takes over within 2 s with **zero failed transactions out of 180,000**.
-> [Details and methodology below.](#performance)
+> **5,000 TPS end to end at p99 26 ms** (including simulated issuer latency) with zero errors; the switch's own
+> processing adds **p99 0.32 ms at 2,000 TPS** and stays under 1 ms at p99 up to 10,000 TPS once a request is
+> received; and when an issuer goes down at 2,000 TPS, stand-in processing takes over within 2 s with
+> **zero failed transactions out of 180,000**. [Details and methodology below.](#performance)
 
 ## What it does
 
@@ -31,7 +31,7 @@ Java 21 · Spring Boot 4 · Netty · Resilience4j · Caffeine · Micrometer/Prom
   account balances, holds, blocked and stolen cards, and adjustable latency for fault injection.
 - **Open-model load generator** that speaks ISO 8583 over TCP and records latency with HdrHistogram from each
   request's *scheduled* send time, which avoids the coordinated-omission error.
-- 56 tests, including end-to-end TCP tests of the timeout → stand-in → circuit breaker → store-and-forward path.
+- 58 tests, including end-to-end TCP tests of the timeout → stand-in → circuit breaker → store-and-forward path.
 
 ## Architecture
 
@@ -179,56 +179,56 @@ MTI 0110
 
 Measured with the bundled open-model load generator. Latency is taken from each request's **scheduled** send
 time (HdrHistogram), so stalls can't hide (no coordinated omission). Everything runs on one laptop: Intel
-i5-1135G7 (4 cores / 8 threads), 8 GB RAM, Windows 11, JDK 21, G1 with a 10 ms pause goal. The load generator
-shares the CPU with the switch, and the laptop was on battery, so these are conservative numbers. Reproduce them
-with `scripts/benchmark.sh`; the investigation behind the tuning is in [docs/performance.md](docs/performance.md).
+i5-1135G7 (4 cores / 8 threads), 8 GB RAM, Windows 11, JDK 21, G1 with a 10 ms pause goal, on AC power. The load
+generator shares the CPU with the switch, so these are conservative numbers. Reproduce them with
+`scripts/benchmark.sh`; the investigation behind the tuning is in [docs/performance.md](docs/performance.md).
 
 **Switch alone**: the issuers answer instantly, so this is the switch's own cost per transaction: decoding,
-checks, routing, encoding and TCP.
+checks, routing, encoding and TCP. *Service time* is measured from when the request actually left the generator.
 
-| Target TPS | Achieved TPS | p50 | p90 | p99 | p99.9 | max | Errors |
+| Target TPS | Achieved TPS | p50 | p99 | p99.9 | max | Service time p99 | Errors |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 2,000 | 2,000 | 0.29 ms | 0.40 ms | **1.23 ms** | 12.2 ms | 18.4 ms | 0 |
-| 5,000 | 5,000 | 0.26 ms | 0.36 ms | **9.61 ms** | 18.7 ms | 25.0 ms | 0 |
-| 10,000 | 10,000 | 0.26 ms | 2.47 ms | 57.6 ms | 121 ms | 125 ms | 0 |
-| 15,000 | 15,000 | 24.4 ms | 318 ms | 467 ms | 473 ms | 480 ms | 0 |
+| 2,000 | 2,000 | 0.21 ms | **0.32 ms** | 5.1 ms | 13.1 ms | 0.31 ms | 0 |
+| 5,000 | 5,000 | 0.15 ms | **8.74 ms** | 24.7 ms | 43.2 ms | 0.45 ms | 0 |
+| 10,000 | 10,000 | 0.12 ms | 31.0 ms | 53.6 ms | 57.4 ms | 0.56 ms | 0 |
+| 15,000 | 15,000 | 0.17 ms | 722 ms | 773 ms | 777 ms | 10.2 ms | 0 |
 
-Throughput keeps up through 15,000 TPS, but past ~10,000 TPS the laptop's CPU (shared with the load generator)
-saturates and queueing shows up in the tail.
+Throughput keeps up through 15,000 TPS. Once a request arrives, the switch answers 99% of them within 0.6 ms up
+to 10,000 TPS; the higher scheduled-time tail comes from GC pauses and from the generator and switch competing
+for the same 4 cores, which saturate past ~10,000 TPS.
 
 **End to end**: issuers with simulated latency (medians 2 / 4 / 6 ms, p99 12 / 20 / 30 ms) and 1% of approvals
 reversed.
 
 | Target TPS | Achieved TPS | p50 | p90 | p99 | p99.9 | Approved | Errors |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1,000 | 1,000 | 12.7 ms | 20.8 ms | 33.3 ms | 49.8 ms | 96.6% | 0 |
-| 2,000 | 2,000 | 12.5 ms | 20.6 ms | 33.3 ms | 49.2 ms | 96.4% | 0 |
-| 5,000 | 5,000 | 12.1 ms | 20.5 ms | **34.3 ms** | 51.4 ms | 96.2% | 0 |
+| 2,000 | 2,000 | 4.16 ms | 11.3 ms | 25.3 ms | 43.8 ms | 96.5% | 0 |
+| 5,000 | 5,000 | 4.25 ms | 12.0 ms | **25.7 ms** | 42.6 ms | 96.2% | 0 |
 
-Latency stays flat as load grows 5x, so the issuers' (simulated) response time dominates. The p50 is higher
-than the simulated medians because, on battery power, Windows rounds the simulator's short sleeps up to its
-15.6 ms timer tick (see [docs/performance.md](docs/performance.md#1-windows-timer-granularity-simulated-latency-was-3x-too-high)).
-The ~3.5% declines are deliberate: the generator sends invalid cards, expired cards and unknown BINs, and the
-mock issuers hold blocked, stolen and low-balance cards.
+Latency stays flat from 2,000 to 5,000 TPS and tracks the simulated issuers' response time, so the issuer
+round trip dominates, not the switch. The ~3.5% declines are deliberate: the generator sends invalid cards,
+expired cards and unknown BINs, and the mock issuers hold blocked, stolen and low-balance cards. All 2,051
+reversals sent (1% of approvals) were accepted.
 
 **Issuer outage**: 2,000 TPS for 90 s; Cedar Savings Bank (about 1/3 of traffic) stops answering at 30 s and
-comes back at 60 s.
+comes back at 60 s. (Recorded before the precise latency simulator, so absolute latencies here run a few ms high;
+the failover behavior is the point.)
 
 | | Result |
 |---|---|
-| Transactions | 180,000 sent, **180,000 answered, 0 timeouts, 0 errors** |
-| Failover | Within ~2 s, Cedar's share moved to stand-in (30–34% of all traffic each second); breaker open, no waiting |
-| Worst second | p99 112 ms: the requests that waited out the 100 ms deadline while the breaker was still learning |
-| During the outage | p99 25–43 ms per second, vs 31–38 ms before the outage, because Cedar's traffic is answered instantly |
-| Approval rate | 94–97% every second; 0.6% declined `91` for exceeding Cedar's stand-in limits |
-| Recovery | Breaker closed and stand-in dropped to 0% within 3 s of Cedar returning; all advices delivered (SAF depth 0) |
+| Transactions | 180,000 sent, **0 timeouts, 0 errors** |
+| Failover | Within ~2 s, Cedar's share moved to stand-in (30–35% of all traffic each second); breaker open, no waiting |
+| Worst seconds | p99 ~110 ms for 2 s: requests that waited out the 100 ms deadline while the breaker was still learning |
+| During the outage | p99 15–31 ms per second, vs 23–42 ms before the outage, because Cedar's traffic is answered instantly |
+| Approval rate | 94–97% every second; stand-in approves up to each issuer's limits and declines above them |
+| Recovery | Stand-in dropped to 0% within 3 s of Cedar returning; breaker closed and all advices delivered (SAF depth 0) |
 
 ```mermaid
 xychart-beta
     title "Share of transactions decided by stand-in (%)"
     x-axis "seconds into the run (Cedar down from 30 s to 60 s)" [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90]
     y-axis "stand-in %" 0 --> 40
-    line [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 29.8, 31.0, 31.9, 31.2, 31.1, 32.3, 33.2, 29.9, 31.3, 33.6, 32.7, 34.0, 34.3, 34.2, 32.4, 33.0, 31.4, 32.6, 34.0, 32.4, 33.0, 33.6, 32.8, 33.2, 31.8, 31.6, 33.5, 33.1, 33.0, 32.9, 31.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    line [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.5, 33.2, 32.3, 30.4, 32.3, 32.8, 33.4, 34.2, 35.5, 32.0, 34.0, 35.2, 32.0, 32.5, 34.5, 33.8, 31.6, 33.3, 33.3, 32.7, 32.6, 32.3, 33.7, 33.1, 32.3, 32.5, 33.7, 34.0, 32.2, 32.5, 32.8, 19.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 ```
 
 ```mermaid
@@ -236,9 +236,8 @@ xychart-beta
     title "p99 latency per second (ms)"
     x-axis "seconds into the run (Cedar down from 30 s to 60 s)" [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90]
     y-axis "p99 ms" 0 --> 120
-    line [37.7, 35.6, 33.1, 31.5, 32.2, 33.7, 35.8, 35.8, 30.7, 33.0, 37.3, 33.5, 34.1, 38.2, 32.8, 37.2, 34.2, 33.6, 38.3, 33.8, 32.4, 36.9, 30.9, 33.8, 35.3, 33.5, 33.9, 36.6, 30.5, 31.7, 36.7, 111.7, 28.4, 25.1, 42.7, 25.0, 27.1, 33.0, 25.9, 26.5, 26.9, 27.2, 25.1, 26.8, 25.7, 24.5, 30.0, 26.1, 26.1, 27.8, 24.7, 29.6, 27.9, 25.7, 26.0, 32.4, 30.2, 25.2, 30.2, 27.0, 25.9, 27.6, 31.8, 33.0, 31.7, 31.9, 37.0, 32.3, 33.1, 35.5, 33.1, 36.4, 36.0, 32.2, 33.6, 32.3, 33.2, 34.9, 35.4, 36.8, 32.9, 31.2, 36.5, 32.5, 34.8, 34.8, 32.6, 31.1, 34.9, 34.0]
+    line [33.8, 32.0, 36.1, 34.4, 30.6, 32.0, 31.5, 31.9, 34.7, 34.0, 33.2, 33.7, 31.9, 33.0, 33.0, 32.1, 33.9, 31.9, 33.4, 31.8, 32.1, 41.7, 32.0, 32.8, 34.0, 32.0, 35.6, 31.6, 24.1, 22.8, 109.9, 105.5, 14.8, 30.7, 16.8, 17.2, 28.0, 25.1, 25.8, 26.3, 26.5, 28.5, 26.0, 25.9, 25.2, 26.1, 27.6, 17.0, 16.9, 16.2, 15.0, 19.2, 16.1, 15.0, 16.5, 17.6, 21.8, 16.8, 18.6, 16.6, 24.0, 78.1, 32.0, 34.4, 32.0, 31.1, 33.4, 35.2, 31.2, 31.5, 33.4, 34.0, 30.8, 33.1, 33.0, 33.5, 77.6, 32.7, 36.9, 32.6, 31.4, 33.2, 32.1, 33.7, 34.8, 34.6, 32.5, 31.9, 33.8, 33.0]
 ```
-
 
 ## Running it
 
@@ -249,7 +248,7 @@ xychart-beta
 #   $env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk-21.0.12.1+1"; $env:Path = "$env:JAVA_HOME\bin;$env:Path"
 # (or dot-source the helper:  . .\scripts\env.ps1)
 
-./mvnw package                     # build + run all 56 tests (use mvnw.cmd in cmd.exe)
+./mvnw package                     # build + run all 58 tests (use mvnw.cmd in cmd.exe)
 java -jar switch-server/target/switch-server-1.0.0-SNAPSHOT.jar
 ```
 
